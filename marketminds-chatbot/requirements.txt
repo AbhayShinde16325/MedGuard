@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+pypdf
+yfinance
+faiss-cpu
+numpy
+sentence-transformers
+google-generativeai
+python-dotenv
+requests
+python-multipart

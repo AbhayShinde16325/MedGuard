@@ -1,31 +1,132 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8" />
-    <title>MarketMinds</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description"
+        content="MarketMinds — AI-powered financial intelligence assistant with RAG-based analysis of market data and company reports." />
+    <title>MarketMinds — AI Financial Assistant</title>
+
+    <!-- Google Font: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- Marked.js for markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- Chart.js for sparkline charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
     <link rel="stylesheet" href="/static/style.css" />
 </head>
+
 <body>
 
-<div class="app">
-    <div class="header">
-        <h1>🧠 MarketMinds</h1>
-        <p>RAG-powered financial intelligence assistant</p>
+    <div class="app" id="app">
+
+        <!-- ─── Header ─── -->
+        <header class="header">
+            <div class="header-left">
+                <h1 id="app-title">
+                    <span class="logo-icon">📊</span>
+                    MarketMinds
+                </h1>
+                <p class="tagline">AI-powered financial intelligence assistant</p>
+            </div>
+            <div class="header-actions">
+                <button id="btn-stream-toggle" class="btn-icon btn-stream active" title="Toggle streaming mode"
+                    onclick="toggleStreaming()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                    </svg>
+                </button>
+                <button id="btn-upload" class="btn-icon" title="Upload a PDF report" onclick="toggleUploadPanel()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                </button>
+                <button id="btn-clear" class="btn-icon" title="Clear chat history" onclick="clearChat()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- ─── Status bar ─── -->
+        <div id="status-bar" class="status-bar">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Connecting…</span>
+        </div>
+
+        <!-- ─── Upload panel (hidden by default) ─── -->
+        <div id="upload-panel" class="upload-panel hidden">
+            <div class="upload-dropzone" id="dropzone">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="12" y1="18" x2="12" y2="12" />
+                    <polyline points="9 15 12 12 15 15" />
+                </svg>
+                <p>Drag & drop a <strong>PDF report</strong> or</p>
+                <label class="upload-btn" for="file-input">Browse files</label>
+                <input type="file" id="file-input" accept=".pdf" hidden />
+            </div>
+            <div id="upload-status" class="upload-status hidden"></div>
+        </div>
+
+        <!-- ─── Chat area ─── -->
+        <div id="chat" class="chat">
+            <!-- Welcome / suggested prompts (shown when chat is empty) -->
+            <div id="welcome" class="welcome">
+                <div class="welcome-icon">🧠</div>
+                <h2>Welcome to MarketMinds</h2>
+                <p>Ask me anything about markets, companies, or your uploaded financial reports.</p>
+                <div class="suggestions">
+                    <button class="suggestion" onclick="useSuggestion(this)">
+                        <span class="suggestion-icon">📈</span>
+                        What is Apple's current share price?
+                    </button>
+                    <button class="suggestion" onclick="useSuggestion(this)">
+                        <span class="suggestion-icon">📄</span>
+                        Summarize the key risks in the annual report
+                    </button>
+                    <button class="suggestion" onclick="useSuggestion(this)">
+                        <span class="suggestion-icon">📊</span>
+                        What is Tesla's P/E ratio and valuation?
+                    </button>
+                    <button class="suggestion" onclick="useSuggestion(this)">
+                        <span class="suggestion-icon">🔍</span>
+                        Compare TCS and Infosys financials
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─── Input area ─── -->
+        <div class="input-area">
+            <textarea id="question" rows="1" placeholder="Ask about markets, companies, or documents…"></textarea>
+            <button type="button" id="btn-send" onclick="sendQuestion()" title="Send message">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+            </button>
+        </div>
+
     </div>
 
-    <!-- CHAT AREA (THIS WAS MISSING) -->
-    <div id="chat" class="chat"></div>
-
-    <div class="input-area">
-        <textarea
-            id="question"
-            rows="2"
-            placeholder="Ask about markets, companies, or documents…"
-        ></textarea>
-        <button type="button" onclick="sendQuestion()">Ask</button>
-    </div>
-</div>
-
-<script src="/static/app.js"></script>
+    <script src="/static/app.js"></script>
 </body>
+
 </html>

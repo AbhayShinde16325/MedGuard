@@ -1,0 +1,438 @@
+# 📊 MarketMinds — Full Codebase Analysis & Improvement Roadmap
+
+> A deep-dive analysis of every module, identifying **static/stubbed features** and exactly how to make them **dynamic and production-ready**.
+
+---
+
+## 🏗️ Current Architecture Overview
+
+```mermaid
+graph TD
+    User[User / Browser] -->|HTTP| Frontend[Frontend<br>HTML/CSS/JS]
+    Frontend -->|POST /ask| FastAPI[FastAPI Backend<br>main.py]
+    FastAPI --> ResponseBuilder[ResponseBuilder<br>response_builder.py]
+    ResponseBuilder --> Router[QueryRouter<br>router.py]
+    Router -->|LIVE_MARKET| MarketData[MarketDataClient<br>financial_api.py]
+    Router -->|DOCUMENT| RAG[RAG Pipeline]
+    Router -->|GENERAL| LLM[LLM Client]
+    RAG --> Embeddings[DummyEmbeddingClient<br>embeddings.py]
+    RAG --> Retriever[Retriever<br>retriever.py]
+    RAG --> Ingestor[DocumentIngestor<br>ingest.py]
+    MarketData -->|yfinance| Yahoo[Yahoo Finance API]
+    LLM -->|subprocess| Ollama[Ollama / Mistral]
+    LLM -.->|alt| Gemini[Gemini API]
+
+    style Embeddings fill:#ff6b6b,stroke:#c0392b,color:#fff
+    style Router fill:#f39c12,stroke:#e67e22,color:#fff
+    style LLM fill:#f39c12,stroke:#e67e22,color:#fff
+    style Frontend fill:#f39c12,stroke:#e67e22,color:#fff
+```
+
+> 🔴 **Red** = Fully static/stubbed &nbsp;&nbsp; 🟡 **Yellow** = Partially static, needs improvement
+
+---
+
+## 🔍 File-by-File Analysis
+
+### 1. 🔴 Embeddings — [embeddings.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/embeddings.py) (FULLY STATIC)
+
+| Current | Problem |
+|---------|---------|
+| [DummyEmbeddingClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/embeddings.py#30-44) returns `[float(len(text))]` | Uses **text length as embedding** — retrieval is essentially random |
+| 1-dimensional vectors | FAISS index is `IndexFlatL2(1)` — semantically meaningless |
+
+**Impact:** The entire RAG pipeline is non-functional. Retrieval returns arbitrary chunks regardless of query relevance.
+
+#### ✅ How to Make Dynamic
+
+```python
+# Option A: Sentence Transformers (local, free, best for your use-case)
+from sentence_transformers import SentenceTransformer
+
+class SentenceTransformerEmbeddingClient(EmbeddingClient):
+    def __init__(self, model_name="all-MiniLM-L6-v2"):
+        self.model = SentenceTransformer(model_name)
+    
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        return self.model.encode(texts).tolist()
+
+# Option B: Gemini Embeddings (cloud, requires API key)
+class GeminiEmbeddingClient(EmbeddingClient):
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=texts,
+        )
+        return result['embedding']
+```
+
+> [!IMPORTANT]
+> This is the **#1 most impactful change**. Without real embeddings, the RAG pipeline is a no-op. The FAISS index dimension must also be updated from `1` to match the embedding model's output dimension (384 for MiniLM, 768 for Gemini).
+
+---
+
+### 2. 🟡 Intent Router — [router.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/router.py) (STATIC KEYWORD MATCHING)
+
+| Current | Problem |
+|---------|---------|
+| Hardcoded keyword lists (`"price"`, `"report"`, etc.) | Misses paraphrased queries, typos, or nuanced intent |
+| `FINANCIAL_ANALYSIS` route exists but is **never handled** in [response_builder.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/response_builder.py) | Dead code — falls through to GENERAL |
+| **Bug:** Lines 9-10 execute `llm.generate(prompt)` at module import time | Crashes on startup or produces side effects |
+
+#### ✅ How to Make Dynamic
+
+```python
+# Option A: LLM-based intent classification
+class LLMQueryRouter:
+    def __init__(self, llm_client):
+        self.llm = llm_client
+    
+    def route(self, question: str) -> QueryType:
+        classification_prompt = f"""Classify this financial question into exactly one category:
+- LIVE_MARKET: Needs real-time stock prices/market data
+- DOCUMENT: Needs to search uploaded reports/documents
+- FINANCIAL_ANALYSIS: Needs ratio analysis, valuation, fundamentals
+- GENERAL: General financial knowledge question
+
+Question: "{question}"
+Category:"""
+        result = self.llm.generate(classification_prompt).strip().upper()
+        return QueryType[result] if result in QueryType.__members__ else QueryType.GENERAL
+
+# Option B: Zero-shot classifier (local, no LLM calls)
+from transformers import pipeline
+classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+```
+
+> [!WARNING]
+> **Bug Fix Needed:** Remove lines 5, 6, 9, 10 in [router.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/router.py) — they import [prompt](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/prompt_templates.py#37-55) from `typer` (wrong library!) and execute `llm.generate(prompt)` at **module load time**, which will either crash or produce unwanted behavior.
+
+---
+
+### 3. 🟡 LLM Client — [llm_client.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py) (PARTIALLY DYNAMIC)
+
+| Current | Problem |
+|---------|---------|
+| Ollama uses `subprocess.run()` for each call | Extremely slow — spawns a new process per request |
+| [GeminiLLMClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#12-23) exists but doesn't extend [LLMClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#24-43) | Inconsistent interface |
+| Import uses `from app.config` (line 66) vs `from backend.app.config` elsewhere | **Import error** depending on how the app is run |
+| [get_llm_client()](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#68-73) doesn't pass `model_name` | Incompatible with `LLMClient.__init__` signature |
+
+#### ✅ How to Make Dynamic
+
+```python
+# Use Ollama's HTTP API instead of subprocess
+import requests
+
+class OllamaLLMClient(LLMClient):
+    def __init__(self, model_name="mistral", base_url="http://localhost:11434"):
+        super().__init__(model_name)
+        self.base_url = base_url
+    
+    def generate(self, prompt: str, context=None) -> str:
+        response = requests.post(f"{self.base_url}/api/generate", json={
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False
+        })
+        return response.json()["response"]
+
+# Fix GeminiLLMClient to extend the base class
+class GeminiLLMClient(LLMClient):
+    def __init__(self):
+        super().__init__(model_name=GEMINI_MODEL)
+        genai.configure(api_key=GEMINI_API_KEY)
+        self.model = genai.GenerativeModel(GEMINI_MODEL)
+    
+    def generate(self, prompt: str, context=None) -> str:
+        response = self.model.generate_content(prompt)
+        return response.text
+```
+
+---
+
+### 4. 🟡 Response Builder — [response_builder.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/response_builder.py) (PARTIALLY DYNAMIC)
+
+| Current | Problem |
+|---------|---------|
+| Hardcoded demo fallback docs (lines 56-61) | Always injects 3 Apple-specific sentences into every session |
+| `FINANCIAL_ANALYSIS` query type is unhandled | Falls through to plain LLM, no data enrichment |
+| No streaming support | User sees nothing until full response is generated |
+| No conversation history / memory | Each query is independent, no follow-up capability |
+
+#### ✅ How to Make Dynamic
+
+| Improvement | Implementation |
+|-------------|----------------|
+| Remove demo docs | Delete lines 56-61; let real documents populate the store |
+| Handle `FINANCIAL_ANALYSIS` | Fetch fundamentals via `yfinance` (P/E, revenue, etc.) + RAG context, combine in prompt |
+| Add streaming | Use FastAPI `StreamingResponse` + Ollama streaming API |
+| Add conversation memory | Maintain a session-level `chat_history: List[dict]` and include in LLM prompt |
+| **Hybrid queries** | When route is ambiguous, fetch **both** market data AND documents, merge context |
+
+---
+
+### 5. 🟡 Financial API — [financial_api.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/data_sources/financial_api.py) (FUNCTIONAL BUT LIMITED)
+
+| Current | Problem |
+|---------|---------|
+| Only fetches current stock price | No historical data, no fundamentals, no financial ratios |
+| Currency is hardcoded to `"USD"` | Wrong for NSE (₹) and European stocks (€, £, CHF) |
+| [TickerResolver](file:///d:/MarketMinds/marketminds-chatbot/backend/app/data_sources/financial_api.py#11-43) uses exact substring match | "apple" matches but "Apple Inc" or "AAPL" as text won't |
+
+#### ✅ How to Make Dynamic
+
+```python
+class MarketDataClient:
+    def get_stock_price(self, ticker: str) -> dict:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        data = stock.history(period="1d")
+        return {
+            "ticker": ticker,
+            "price": round(float(data.iloc[-1]["Close"]), 2),
+            "currency": info.get("currency", "USD"),  # Dynamic currency!
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+    
+    def get_fundamentals(self, ticker: str) -> dict:
+        """NEW: Get key financial metrics."""
+        info = yf.Ticker(ticker).info
+        return {
+            "pe_ratio": info.get("trailingPE"),
+            "market_cap": info.get("marketCap"),
+            "revenue": info.get("totalRevenue"),
+            "profit_margin": info.get("profitMargins"),
+            "52w_high": info.get("fiftyTwoWeekHigh"),
+            "52w_low": info.get("fiftyTwoWeekLow"),
+            "dividend_yield": info.get("dividendYield"),
+        }
+    
+    def get_historical(self, ticker: str, period="1mo") -> list:
+        """NEW: Get historical price data for charts."""
+        data = yf.Ticker(ticker).history(period=period)
+        return [{"date": d.isoformat(), "close": round(c, 2)} 
+                for d, c in zip(data.index, data["Close"])]
+```
+
+---
+
+### 6. 🟡 Document Ingestion — [ingest.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/ingest.py) (FUNCTIONAL BUT BASIC)
+
+| Current | Problem |
+|---------|---------|
+| Fixed character-count chunking (500 chars) | Cuts mid-sentence, loses semantic meaning |
+| No chunk overlap | Important context at chunk boundaries is lost |
+| Only ingests on first startup | No way to add new documents without deleting the vector store |
+
+#### ✅ How to Make Dynamic
+
+```python
+def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
+    """Semantic-aware chunking with overlap."""
+    sentences = text.split('. ')
+    chunks, current_chunk = [], []
+    current_length = 0
+    
+    for sentence in sentences:
+        if current_length + len(sentence) > chunk_size and current_chunk:
+            chunks.append('. '.join(current_chunk) + '.')
+            # Keep last N sentences for overlap
+            overlap_sentences = current_chunk[-2:]
+            current_chunk = overlap_sentences
+            current_length = sum(len(s) for s in current_chunk)
+        current_chunk.append(sentence)
+        current_length += len(sentence)
+    
+    if current_chunk:
+        chunks.append('. '.join(current_chunk))
+    return chunks
+```
+
+**Also add:** A `/upload` API endpoint for dynamic document ingestion:
+
+```python
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """Dynamically ingest a new PDF into the RAG pipeline."""
+    ...
+```
+
+---
+
+### 7. 🟡 Frontend — [index.html](file:///d:/MarketMinds/marketminds-chatbot/frontend/index.html) + [app.js](file:///d:/MarketMinds/marketminds-chatbot/frontend/app.js) + [style.css](file:///d:/MarketMinds/marketminds-chatbot/frontend/style.css) (BASIC)
+
+| Current | Problem |
+|---------|---------|
+| No loading indicator | User doesn't know if request is processing |
+| No markdown rendering in bot responses | LLM output (with `**bold**`, lists, etc.) shows as raw text |
+| No chat history persistence | Refresh = everything gone |
+| No mobile responsiveness metadata | Missing `<meta name="viewport">` |
+| No document upload UI | Users can't add documents through the interface |
+| No suggested questions / onboarding | Empty chat with no guidance |
+
+#### ✅ How to Make Dynamic
+
+| Feature | Implementation |
+|---------|----------------|
+| **Loading spinner** | Show animated dots/spinner while `fetch()` is pending |
+| **Markdown rendering** | Use [marked.js](https://cdn.jsdelivr.net/npm/marked/marked.min.js) to render bot responses |
+| **Chat persistence** | Use `localStorage` to save/restore conversation |
+| **File upload** | Add drag-and-drop or file picker that POSTs to `/upload` |
+| **Suggested prompts** | Show clickable example questions on first load |
+| **Dark/Light theme toggle** | Already dark-themed; add toggle for accessibility |
+| **Typing animation** | Stream-in bot responses character-by-character |
+
+---
+
+### 8. 🔴 Tests — [test_basic_flow.py](file:///d:/MarketMinds/marketminds-chatbot/tests/test_basic_flow.py) (EMPTY)
+
+The test file is completely empty. No test coverage whatsoever.
+
+#### ✅ How to Make Dynamic
+
+```python
+import pytest
+from backend.app.chatbot.router import QueryRouter, QueryType
+from backend.app.chatbot.response_builder import ResponseBuilder
+
+class TestQueryRouter:
+    def test_price_query_routes_to_live_market(self):
+        router = QueryRouter()
+        assert router.route("What is Apple's share price?") == QueryType.LIVE_MARKET
+    
+    def test_report_query_routes_to_document(self):
+        router = QueryRouter()
+        assert router.route("Summarize the earnings report") == QueryType.DOCUMENT
+    
+    def test_general_query_routes_correctly(self):
+        router = QueryRouter()
+        assert router.route("What is a stock?") == QueryType.GENERAL
+
+class TestResponseBuilder:
+    def test_build_response_returns_string(self, mock_llm):
+        builder = ResponseBuilder(mock_llm)
+        result = builder.build_response("Tell me about Apple")
+        assert isinstance(result, str)
+        assert len(result) > 0
+```
+
+---
+
+### 9. 🟡 Configuration — [config.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/config.py)
+
+| Current | Problem |
+|---------|---------|
+| `DEBUG = True` hardcoded | Should read from env |
+| No [.env](file:///d:/MarketMinds/.env) file loading in the config module | Relies on OS-level env vars only |
+| `DEFAULT_MODEL_NAME` not used by [main.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py) | [main.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py) hardcodes `"mistral"` independently |
+
+#### ✅ Fix
+
+```python
+from dotenv import load_dotenv
+load_dotenv()
+
+class AppConfig:
+    DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    DEFAULT_MODEL_NAME: str = os.getenv("DEFAULT_MODEL", "mistral")
+    # ... use these in main.py instead of hardcoded values
+```
+
+---
+
+## 🚀 Priority Improvement Roadmap
+
+### 🔥 Phase 1 — Critical Fixes (Makes It Actually Work)
+
+| # | Change | File(s) | Effort |
+|---|--------|---------|--------|
+| 1 | **Replace [DummyEmbeddingClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/embeddings.py#30-44) with `SentenceTransformerEmbeddingClient`** | [embeddings.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/embeddings.py) | 🟢 Low |
+| 2 | **Update FAISS index dimension** from 1 to 384 | [retriever.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/retriever.py) | 🟢 Low |
+| 3 | **Fix router.py bug** — remove lines 5-6, 9-10 (import-time execution) | [router.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/router.py) | 🟢 Low |
+| 4 | **Fix import path** in [llm_client.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py) line 66 | [llm_client.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py) | 🟢 Low |
+| 5 | **Remove hardcoded demo docs** from ResponseBuilder | [response_builder.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/response_builder.py) | 🟢 Low |
+
+### ⚡ Phase 2 — Core Dynamic Features
+
+| # | Change | File(s) | Effort |
+|---|--------|---------|--------|
+| 6 | **Use Ollama HTTP API** instead of subprocess | [llm_client.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py) | 🟡 Medium |
+| 7 | **Add semantic chunking with overlap** | [ingest.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/ingest.py) | 🟡 Medium |
+| 8 | **Handle `FINANCIAL_ANALYSIS` route** with fundamentals data | [response_builder.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/response_builder.py) | 🟡 Medium |
+| 9 | **Dynamic currency detection** in MarketDataClient | [financial_api.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/data_sources/financial_api.py) | 🟢 Low |
+| 10 | **Add `/upload` endpoint** for dynamic PDF ingestion | [main.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py) | 🟡 Medium |
+
+### 🎨 Phase 3 — Frontend & UX
+
+| # | Change | File(s) | Effort |
+|---|--------|---------|--------|
+| 11 | **Add loading indicator** + typing animation | [app.js](file:///d:/MarketMinds/marketminds-chatbot/frontend/app.js) | 🟢 Low |
+| 12 | **Render markdown** in bot responses (marked.js) | [app.js](file:///d:/MarketMinds/marketminds-chatbot/frontend/app.js), [index.html](file:///d:/MarketMinds/marketminds-chatbot/frontend/index.html) | 🟢 Low |
+| 13 | **Add suggested prompts** on empty chat | [index.html](file:///d:/MarketMinds/marketminds-chatbot/frontend/index.html), [app.js](file:///d:/MarketMinds/marketminds-chatbot/frontend/app.js) | 🟢 Low |
+| 14 | **Add file upload widget** for documents | Frontend + Backend | 🟡 Medium |
+| 15 | **Chat history persistence** with localStorage | [app.js](file:///d:/MarketMinds/marketminds-chatbot/frontend/app.js) | 🟢 Low |
+| 16 | **Add viewport meta** + mobile responsiveness | [index.html](file:///d:/MarketMinds/marketminds-chatbot/frontend/index.html), [style.css](file:///d:/MarketMinds/marketminds-chatbot/frontend/style.css) | 🟢 Low |
+
+### 🧪 Phase 4 — Quality & Production Readiness
+
+| # | Change | File(s) | Effort |
+|---|--------|---------|--------|
+| 17 | **Write unit tests** | [test_basic_flow.py](file:///d:/MarketMinds/marketminds-chatbot/tests/test_basic_flow.py) | 🟡 Medium |
+| 18 | **Add conversation memory** (session-based) | Backend | 🟡 Medium |
+| 19 | **Add `/history` endpoint** for chat persistence server-side | Backend | 🟡 Medium |
+| 20 | **Streaming responses** via SSE/WebSocket | Backend + Frontend | 🔴 High |
+| 21 | **LLM-based intent routing** | [router.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/router.py) | 🟡 Medium |
+| 22 | **Error handling & graceful degradation** | All files | 🟡 Medium |
+
+### 🌟 Phase 5 — Advanced Features (from Archive Lambdas)
+
+| # | Change | Source | Effort |
+|---|--------|--------|--------|
+| 23 | **Integrate earnings summarization** | [lambda_summarize_earnings.py](file:///d:/MarketMinds/Archive/lambdas/lambda_summarize_earnings.py) | 🟡 Medium |
+| 24 | **Add prediction/charting** with historical data | [lambda_predict_and_chart.py](file:///d:/MarketMinds/Archive/lambdas/lambda_predict_and_chart.py) | 🔴 High |
+| 25 | **Multi-source data merge** (Finnhub + AlphaVantage + docs) | [lambda_merge_analysis.py](file:///d:/MarketMinds/Archive/lambdas/lambda_merge_analysis.py) | 🔴 High |
+| 26 | **Multi-company comparison** | New module | 🔴 High |
+
+---
+
+## 🐛 Bugs Found During Analysis
+
+| # | Bug | Location | Severity |
+|---|-----|----------|----------|
+| 1 | `from typer import prompt` + `llm.generate(prompt)` executes at **import time** | [router.py:5-10](file:///d:/MarketMinds/marketminds-chatbot/backend/app/chatbot/router.py#L5-L10) | 🔴 Critical |
+| 2 | `from app.config import LLM_PROVIDER` — wrong import path (should be `backend.app.config`) | [llm_client.py:66](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#L66) | 🔴 Critical |
+| 3 | [GeminiLLMClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#12-23) doesn't extend [LLMClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#24-43) base class | [llm_client.py:12](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#L12) | 🟡 Medium |
+| 4 | [main.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py) hardcodes `"mistral"` instead of using `config.DEFAULT_MODEL_NAME` | [main.py:34](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py#L34) | 🟢 Low |
+| 5 | [OllamaLLMClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/llm/llm_client.py#45-65) uses `model_name` from init but [main.py](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py) ignores config | [main.py:34](file:///d:/MarketMinds/marketminds-chatbot/backend/app/main.py#L34) | 🟢 Low |
+| 6 | Currency hardcoded to `"USD"` for all tickers, including NSE (₹) and European stocks | [financial_api.py:71](file:///d:/MarketMinds/marketminds-chatbot/backend/app/data_sources/financial_api.py#L71) | 🟡 Medium |
+
+---
+
+## 📊 Static vs Dynamic Feature Summary
+
+```mermaid
+pie title Current Feature Status
+    "Fully Static/Stubbed" : 3
+    "Partially Working" : 6
+    "Fully Dynamic" : 2
+```
+
+| Component | Status | Key Issue |
+|-----------|--------|-----------|
+| Embeddings | 🔴 Static | Dummy (text length only) |
+| FAISS Retriever | 🔴 Static | 1-dim index, meaningless |
+| Intent Router | 🟡 Partial | Keyword-only, has bugs |
+| LLM Client (Ollama) | 🟡 Partial | Works but uses subprocess |
+| LLM Client (Gemini) | 🟡 Partial | Exists but broken interface |
+| Financial API | 🟢 Dynamic | Works, but limited to price-only |
+| Ticker Resolver | 🟡 Partial | Exact match only, small dataset |
+| Document Ingestion | 🟡 Partial | Works but naive chunking |
+| Frontend | 🟡 Partial | Functional but bare-bones |
+| Tests | 🔴 Empty | Zero coverage |
+| PDF Utils | 🟢 Dynamic | Fully functional |
+
+---
+
+> [!TIP]
+> **Recommended starting point:** Tackle **Phase 1** first (items 1-5). These are all low-effort fixes that will make the RAG pipeline actually work. The single biggest impact change is replacing [DummyEmbeddingClient](file:///d:/MarketMinds/marketminds-chatbot/backend/app/rag/embeddings.py#30-44) — it transforms the chatbot from returning random text chunks to returning semantically relevant context.
