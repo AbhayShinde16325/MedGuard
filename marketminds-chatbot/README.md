@@ -39,8 +39,8 @@ Final Answer
 The system uses:
 
 - **Intent Router** - Determines if query needs market data, reports, or both
-- **LLM Client** - Ollama-based (Mistral) for local, privacy-respecting inference
-- **RAG Pipeline** - Vector embeddings + document retrieval for company reports
+- **LLM Client** - Gemini-based for cloud inference
+- **RAG Pipeline** - Gemini embeddings + document retrieval for company reports
 - **Financial Data Source** - API integration for real-time stock/market data
 
 ---
@@ -51,8 +51,8 @@ The system uses:
 |-----------|------------|
 | **Language** | Python 3.8+ |
 | **Backend Framework** | FastAPI |
-| **LLM** | Ollama (Mistral) |
-| **Embeddings** | Sentence Transformers |
+| **LLM** | Gemini 2.5 Flash |
+| **Embeddings** | Gemini API |
 | **Vector Store** | Local (Chroma/FAISS) |
 | **Frontend** | HTML/CSS/JavaScript |
 | **Document Processing** | PyPDF2, LangChain |
@@ -73,7 +73,7 @@ marketminds-chatbot/
 │       ├── data_sources/
 │       │   └── financial_api.py    # External data integrations
 │       ├── llm/
-│       │   ├── llm_client.py       # Ollama client
+│       │   ├── llm_client.py       # Gemini client
 │       │   └── prompt_templates.py # LLM prompts
 │       ├── rag/
 │       │   ├── embeddings.py       # Embedding generation
@@ -103,8 +103,8 @@ marketminds-chatbot/
 ### Prerequisites
 
 - Python 3.8 or higher
-- [Ollama](https://ollama.ai) installed and running locally
 - pip package manager
+- Gemini API key
 
 ### 1. Clone & Navigate
 
@@ -131,17 +131,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Set Up Ollama
-
-```bash
-# Start Ollama service (runs on localhost:11434)
-ollama serve
-
-# In another terminal, pull the Mistral model
-ollama pull mistral
-```
-
-### 5. Prepare Data
+### 4. Prepare Data
 
 Place earnings reports and company documents in `data/raw/` directory.
 
@@ -180,6 +170,45 @@ Open your browser and navigate to:
 ```
 http://localhost:8000
 ```
+
+---
+
+## 🏗️ Building the Executable
+
+To create a standalone Windows executable that can be distributed to users without requiring Python:
+
+### Prerequisites
+
+- Python 3.8+ with PyInstaller installed
+- Gemini API key (for testing)
+
+### Build Steps
+
+1. Ensure dependencies are installed:
+   ```bash
+   pip install -r requirements.txt
+   pip install pyinstaller
+   ```
+
+2. Run the build script:
+   ```bash
+   python build_exe.py
+   ```
+
+3. The executable will be created in `dist/launcher/launcher.exe`
+
+### Distribution
+
+- Zip the entire `dist/launcher/` folder
+- Share the ZIP file with users
+- On first run, users must configure their Gemini API key in `%LOCALAPPDATA%\MarketMinds\.env`
+
+### Recent Updates (March 2026)
+
+- **Removed Ollama and Hugging Face dependencies**: The project now exclusively uses Google Gemini for both LLM inference and embeddings.
+- **Simplified build process**: No more model downloading or bundling; the exe is self-contained and relies only on a Gemini API key.
+- **Fallback embeddings**: If the Gemini API is unavailable, the system gracefully degrades to dummy embeddings to prevent crashes.
+- **Configuration**: Defaults to Gemini provider; users only need to set `GEMINI_API_KEY` in their local `.env` file.
 
 ---
 
@@ -238,7 +267,7 @@ Most financial tools analyze one data source at a time. **MarketMinds**:
 
 - ✅ Core architecture designed & implemented
 - ✅ FastAPI backend with RAG pipeline
-- ✅ Ollama LLM integration
+- ✅ Gemini LLM integration
 - ✅ Vector store setup
 - ✅ Basic chat interface
 - 🔄 In development: Enhanced intent detection, multi-company analysis
@@ -290,8 +319,7 @@ Edit `backend/app/config.py` to customize:
 
 | Issue | Solution |
 |-------|----------|
-| Ollama connection refused | Ensure Ollama is running: `ollama serve` |
-| Model not found | Pull model: `ollama pull mistral` |
+| Gemini API key invalid | Check `GEMINI_API_KEY` in `.env` |
 | Port 8000 in use | Change port: `uvicorn ... --port 8001` |
 | Vector store empty | Run: `python backend/app/rag/ingest.py` |
 
@@ -324,7 +352,7 @@ Contributions are welcome! Please feel free to:
 ## 📚 Resources
 
 - [FastAPI Documentation](https://fastapi.tiangolo.com)
-- [Ollama Models](https://ollama.ai/library)
+- [Gemini API Documentation](https://ai.google.dev/docs)
 - [LangChain Documentation](https://langchain.readthedocs.io)
 - [Vector Search Basics](https://www.pinecone.io/learn/vector-search)
 

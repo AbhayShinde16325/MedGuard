@@ -8,6 +8,14 @@ venv/
 
 # Vector stores / generated data
 data/vector_store/
+data/processed/
+
+# PyInstaller build artifacts
+dist/
+build/
+*.spec
+model_cache/
 
 # OS
 .DS_Store
+Thumbs.db

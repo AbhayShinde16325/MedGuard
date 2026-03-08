@@ -77,11 +77,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ---------- Frontend setup ----------
-BASE_DIR = Path(__file__).resolve().parents[2]
-FRONTEND_DIR = BASE_DIR / "frontend"
+FRONTEND_DIR = config.BASE_DIR / "frontend"
 
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
-
 
 @app.get("/")
 def serve_frontend():

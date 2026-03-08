@@ -25,7 +25,7 @@ from backend.app.data_sources.financial_api import (
 )
 from backend.app.rag.ingest import DocumentIngestor
 from backend.app.rag.retriever import Retriever
-from backend.app.rag.embeddings import SentenceTransformerClient
+from backend.app.rag.embeddings import GeminiEmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class ResponseBuilder:
         self.ticker_resolver = TickerResolver()
 
         # RAG components — real semantic embeddings
-        self.embedding_client = SentenceTransformerClient()
+        self.embedding_client = GeminiEmbeddingClient()
         vector_store_path = config.VECTOR_STORE_DIR / "faiss_store.pkl"
 
         self.retriever = Retriever(

@@ -26,8 +26,8 @@ print("  ✅ All 4 route types work correctly")
 
 # 3. Embeddings
 print("\n[3/5] Embeddings (loading model, may take a moment)...")
-from backend.app.rag.embeddings import SentenceTransformerClient, EMBEDDING_DIM
-client = SentenceTransformerClient()
+from backend.app.rag.embeddings import GeminiEmbeddingClient, EMBEDDING_DIM
+client = GeminiEmbeddingClient()
 vecs = client.embed(["hello world", "stock market crash"])
 assert len(vecs) == 2
 assert len(vecs[0]) == EMBEDDING_DIM

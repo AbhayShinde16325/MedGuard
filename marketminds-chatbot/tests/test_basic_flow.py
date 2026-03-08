@@ -143,7 +143,7 @@ class TestDocumentIngestor:
 # ===================================================================
 
 from backend.app.rag.retriever import Retriever
-from backend.app.rag.embeddings import DummyEmbeddingClient, SentenceTransformerClient
+from backend.app.rag.embeddings import DummyEmbeddingClient, GeminiEmbeddingClient
 
 
 class TestRetriever:
